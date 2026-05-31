@@ -14,6 +14,33 @@ const STATUS_COLOR: any = {
   'תיקון תקלה': '#EF4444',
 };
 
+// פורמט תאריך DD/MM/YYYY
+const formatDate = (dateStr: string) => {
+  if (!dateStr) return '';
+  const [y, m, d] = dateStr.split('-');
+  if (!y || !m || !d) return dateStr;
+  return `${d}/${m}/${y}`;
+};
+
+// דחיסת תמונה לפני שמירה
+const compressImage = (base64: string, maxWidth = 800): Promise<string> => {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const ratio = Math.min(maxWidth / img.width, 1);
+      canvas.width = img.width * ratio;
+      canvas.height = img.height * ratio;
+      const ctx = canvas.getContext('2d')!;
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL('image/jpeg', 0.7));
+    };
+    img.src = base64;
+  });
+};
+
+const emptyJob = () => ({ date: new Date().toISOString().split('T')[0], type: '', description: '', price: '', status: 'בביצוע', notes: '', reminder: '', image: '' });
+
 export default function Home() {
   const [user, setUser] = useState<any>(null);
   const [email, setEmail] = useState('');
@@ -25,9 +52,10 @@ export default function Home() {
   const [selectedCustomerJobs, setSelectedCustomerJobs] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [reminders, setReminders] = useState<any[]>([]);
+  const [editingJob, setEditingJob] = useState<any>(null); // עבודה בעריכה
 
   const [newCustomer, setNewCustomer] = useState({ name: '', phone: '', address: '', city: '', notes: '', status: 'פעיל' });
-  const [newJob, setNewJob] = useState({ date: new Date().toISOString().split('T')[0], type: '', description: '', price: '', status: 'בביצוע', notes: '', reminder: '', image: '' });
+  const [newJob, setNewJob] = useState<any>(emptyJob());
   const [newReminder, setNewReminder] = useState({ customerName: '', date: '', note: '' });
 
   const imgRef = useRef<HTMLInputElement>(null);
@@ -76,17 +104,41 @@ export default function Home() {
     if (!selectedCustomer?.id) return alert('לא נבחר לקוח');
     setLoading(true);
     try {
-      await addDoc(collection(db, 'customers', selectedCustomer.id, 'jobs'), {
-        ...newJob,
-        createdAt: new Date().toISOString()
-      });
-      setNewJob({ date: new Date().toISOString().split('T')[0], type: '', description: '', price: '', status: 'בביצוע', notes: '', reminder: '', image: '' });
+      // דחיסת תמונה אם יש
+      let jobData = { ...newJob };
+      if (jobData.image && jobData.image.startsWith('data:')) {
+        jobData.image = await compressImage(jobData.image);
+      }
+
+      if (editingJob) {
+        // עדכון עבודה קיימת
+        await updateDoc(doc(db, 'customers', selectedCustomer.id, 'jobs', editingJob.id), {
+          ...jobData,
+          updatedAt: new Date().toISOString()
+        });
+        setEditingJob(null);
+      } else {
+        // עבודה חדשה
+        await addDoc(collection(db, 'customers', selectedCustomer.id, 'jobs'), {
+          ...jobData,
+          createdAt: new Date().toISOString()
+        });
+      }
+
+      setNewJob(emptyJob());
       await loadCustomerJobs(selectedCustomer.id);
       setScreen('customer');
     } catch (e) {
+      console.error(e);
       alert('שגיאה בשמירה');
     }
     setLoading(false);
+  };
+
+  const startEditJob = (job: any) => {
+    setEditingJob(job);
+    setNewJob({ ...job });
+    setScreen('newJob');
   };
 
   const saveReminder = async () => {
@@ -101,12 +153,12 @@ export default function Home() {
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = ev => setNewJob(p => ({ ...p, image: ev.target?.result as string }));
+    reader.onload = ev => setNewJob((p: any) => ({ ...p, image: ev.target?.result as string }));
     reader.readAsDataURL(file);
   };
 
   const sendWhatsApp = (customer: any, job: any) => {
-    const msg = `שלום ${customer.name}! סיכום עבודה:\nסוג: ${job.type}\nתיאור: ${job.description}\nמחיר: ₪${job.price}\nסטטוס: ${job.status}\nתאריך: ${job.date}`;
+    const msg = `שלום ${customer.name}! סיכום עבודה:\nסוג: ${job.type}\nתיאור: ${job.description}\nמחיר: ₪${job.price}\nסטטוס: ${job.status}\nתאריך: ${formatDate(job.date)}`;
     const phone = customer.phone.replace(/\D/g, '');
     const intlPhone = phone.startsWith('0') ? '972' + phone.slice(1) : phone;
     window.open(`https://wa.me/${intlPhone}?text=${encodeURIComponent(msg)}`, '_blank');
@@ -124,7 +176,8 @@ export default function Home() {
     card: { background: '#fff', borderRadius: 12, padding: '14px 16px', marginBottom: 10, boxShadow: '0 1px 4px rgba(0,0,0,0.07)', border: '1px solid #F1F5F9' },
     btn: { background: '#2563EB', color: '#fff', border: 'none', borderRadius: 10, padding: '12px 20px', fontSize: 15, fontWeight: 700, cursor: 'pointer', width: '100%', marginBottom: 8 },
     btnSec: { background: '#F1F5F9', color: '#374151', border: 'none', borderRadius: 10, padding: '12px 20px', fontSize: 15, fontWeight: 700, cursor: 'pointer', width: '100%', marginBottom: 8 },
-    input: { width: '100%', padding: '11px 13px', borderRadius: 10, border: '1.5px solid #E2E8F0', fontSize: 15, marginBottom: 12, boxSizing: 'border-box' as any, fontFamily: 'Arial' },
+    // תיקון placeholder — צבע כהה יותר
+    input: { width: '100%', padding: '11px 13px', borderRadius: 10, border: '1.5px solid #E2E8F0', fontSize: 15, marginBottom: 12, boxSizing: 'border-box' as any, fontFamily: 'Arial', color: '#1E293B' },
     label: { fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 4, display: 'block' },
     nav: { position: 'fixed' as any, bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '100%', maxWidth: 500, background: '#fff', borderTop: '1px solid #E2E8F0', display: 'flex' },
     navBtn: (active: boolean) => ({ flex: 1, padding: '8px 0 6px', border: 'none', background: 'none', cursor: 'pointer', color: active ? '#2563EB' : '#94A3B8', fontWeight: active ? 700 : 500, fontSize: 11 }),
@@ -148,6 +201,7 @@ export default function Home() {
 
   return (
     <div style={s.app}>
+      <style>{`input::placeholder { color: #94A3B8 !important; opacity: 1; }`}</style>
       <div style={s.topbar}>
         <span>⚡ ElectroPro</span>
         <button onClick={() => signOut(auth)} style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff', borderRadius: 8, padding: '6px 12px', cursor: 'pointer' }}>יציאה</button>
@@ -211,7 +265,7 @@ export default function Home() {
               <div style={{ fontSize: 14, color: '#64748B' }}>📍 {selectedCustomer.address}, {selectedCustomer.city}</div>
               {selectedCustomer.notes && <div style={{ marginTop: 8, color: '#78350F', background: '#FFFBEB', padding: 8, borderRadius: 8, fontSize: 13 }}>📝 {selectedCustomer.notes}</div>}
             </div>
-            <button style={s.btn} onClick={() => setScreen('newJob')}>+ הוסף עבודה</button>
+            <button style={s.btn} onClick={() => { setEditingJob(null); setNewJob(emptyJob()); setScreen('newJob'); }}>+ הוסף עבודה</button>
             <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 8 }}>עבודות</div>
             {selectedCustomerJobs.length === 0 && <div style={{ textAlign: 'center', color: '#94A3B8', padding: 20 }}>אין עבודות עדיין</div>}
             {selectedCustomerJobs.map(j => (
@@ -223,13 +277,18 @@ export default function Home() {
                 {j.description && <div style={{ fontSize: 13, color: '#64748B', marginTop: 4 }}>{j.description}</div>}
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6 }}>
                   {j.price ? <div style={{ fontWeight: 700 }}>₪{j.price}</div> : <div />}
-                  <div style={{ fontSize: 12, color: '#94A3B8' }}>{j.date}</div>
+                  <div style={{ fontSize: 12, color: '#94A3B8' }}>{formatDate(j.date)}</div>
                 </div>
                 {j.image && <img src={j.image} style={{ width: '100%', borderRadius: 8, marginTop: 8 }} />}
-                {j.reminder && <div style={{ fontSize: 12, color: '#F59E0B', marginTop: 4 }}>🔔 תזכורת: {j.reminder}</div>}
-                <button onClick={() => sendWhatsApp(selectedCustomer, j)} style={{ ...s.btnSec, marginTop: 8, marginBottom: 0, padding: '8px', fontSize: 13 }}>
-                  📱 שלח סיכום בוואטסאפ
-                </button>
+                {j.reminder && <div style={{ fontSize: 12, color: '#F59E0B', marginTop: 4 }}>🔔 תזכורת: {formatDate(j.reminder)}</div>}
+                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                  <button onClick={() => startEditJob(j)} style={{ ...s.btnSec, marginBottom: 0, padding: '8px', fontSize: 13, flex: 1 }}>
+                    ✏️ עריכה
+                  </button>
+                  <button onClick={() => sendWhatsApp(selectedCustomer, j)} style={{ ...s.btnSec, marginBottom: 0, padding: '8px', fontSize: 13, flex: 1 }}>
+                    📱 וואטסאפ
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -250,22 +309,24 @@ export default function Home() {
           </div>
         )}
 
-        {/* NEW JOB */}
+        {/* NEW / EDIT JOB */}
         {screen === 'newJob' && (
           <div>
-            <button onClick={() => setScreen('customer')} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, marginBottom: 12 }}>← חזרה</button>
-            <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 16 }}>עבודה חדשה — {selectedCustomer?.name}</div>
+            <button onClick={() => { setEditingJob(null); setScreen('customer'); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, marginBottom: 12 }}>← חזרה</button>
+            <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 16 }}>
+              {editingJob ? '✏️ עריכת עבודה' : 'עבודה חדשה'} — {selectedCustomer?.name}
+            </div>
 
             <label style={s.label}>תאריך</label>
-            <input style={s.input} type="date" value={newJob.date} onChange={e => setNewJob(p => ({ ...p, date: e.target.value }))} />
+            <input style={s.input} type="date" value={newJob.date} onChange={e => setNewJob((p: any) => ({ ...p, date: e.target.value }))} />
 
             <label style={s.label}>סוג עבודה</label>
-            <input style={s.input} value={newJob.type} onChange={e => setNewJob(p => ({ ...p, type: e.target.value }))} placeholder="החלפת לוח, תקלה, הוספת שקעים..." />
+            <input style={s.input} value={newJob.type} onChange={e => setNewJob((p: any) => ({ ...p, type: e.target.value }))} placeholder="החלפת לוח, תקלה, הוספת שקעים..." />
 
             <label style={s.label}>סטטוס</label>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
               {JOB_STATUSES.map(st => (
-                <button key={st} onClick={() => setNewJob(p => ({ ...p, status: st }))} style={{
+                <button key={st} onClick={() => setNewJob((p: any) => ({ ...p, status: st }))} style={{
                   padding: '10px', borderRadius: 10, border: `2px solid ${newJob.status === st ? STATUS_COLOR[st] : '#E2E8F0'}`,
                   background: newJob.status === st ? STATUS_COLOR[st] + '22' : '#fff',
                   color: newJob.status === st ? STATUS_COLOR[st] : '#374151',
@@ -275,23 +336,23 @@ export default function Home() {
             </div>
 
             <label style={s.label}>תיאור</label>
-            <input style={s.input} value={newJob.description} onChange={e => setNewJob(p => ({ ...p, description: e.target.value }))} placeholder="תיאור העבודה..." />
+            <input style={s.input} value={newJob.description} onChange={e => setNewJob((p: any) => ({ ...p, description: e.target.value }))} placeholder="תיאור העבודה..." />
 
             <label style={s.label}>מחיר ₪</label>
-            <input style={s.input} type="number" value={newJob.price} onChange={e => setNewJob(p => ({ ...p, price: e.target.value }))} placeholder="0" />
+            <input style={s.input} type="number" value={newJob.price} onChange={e => setNewJob((p: any) => ({ ...p, price: e.target.value }))} placeholder="0" />
 
             <label style={s.label}>הערות</label>
-            <input style={s.input} value={newJob.notes} onChange={e => setNewJob(p => ({ ...p, notes: e.target.value }))} placeholder="הערות נוספות..." />
+            <input style={s.input} value={newJob.notes} onChange={e => setNewJob((p: any) => ({ ...p, notes: e.target.value }))} placeholder="הערות נוספות..." />
 
             <label style={s.label}>תזכורת (תאריך חזרה)</label>
-            <input style={s.input} type="date" value={newJob.reminder} onChange={e => setNewJob(p => ({ ...p, reminder: e.target.value }))} />
+            <input style={s.input} type="date" value={newJob.reminder} onChange={e => setNewJob((p: any) => ({ ...p, reminder: e.target.value }))} />
 
             <label style={s.label}>תמונה</label>
             <input ref={imgRef} type="file" accept="image/*" capture="environment" onChange={handleImage} style={{ display: 'none' }} />
             <button style={s.btnSec} onClick={() => imgRef.current?.click()}>📷 צלם / בחר תמונה</button>
             {newJob.image && <img src={newJob.image} style={{ width: '100%', borderRadius: 8, marginBottom: 12 }} />}
 
-            <button style={s.btn} onClick={saveJob} disabled={loading}>{loading ? 'שומר...' : 'שמור עבודה'}</button>
+            <button style={s.btn} onClick={saveJob} disabled={loading}>{loading ? 'שומר...' : editingJob ? 'עדכן עבודה' : 'שמור עבודה'}</button>
           </div>
         )}
 
@@ -305,7 +366,7 @@ export default function Home() {
               <div key={r.id} style={{ ...s.card, borderRight: `4px solid ${r.date === new Date().toISOString().split('T')[0] ? '#F59E0B' : '#E2E8F0'}` }}>
                 <div style={{ fontWeight: 700 }}>{r.customerName}</div>
                 <div style={{ fontSize: 13, color: '#64748B' }}>{r.note}</div>
-                <div style={{ fontSize: 12, color: '#94A3B8', marginTop: 4 }}>📅 {r.date}</div>
+                <div style={{ fontSize: 12, color: '#94A3B8', marginTop: 4 }}>📅 {formatDate(r.date)}</div>
               </div>
             ))}
           </div>
