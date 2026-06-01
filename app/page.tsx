@@ -37,9 +37,9 @@ const compressImage = (base64: string, maxWidth = 800): Promise<string> => {
   });
 };
 
-const emptyJob = () => ({ date: new Date().toISOString().split('T')[0], type: '', description: '', price: '', status: 'בביצוע', notes: '', reminder: '', image: '' });
+const emptyJob = () => ({ date: new Date().toISOString().split('T')[0], type: '', description: '', price: '', status: 'בביצוע', notes: '', reminder: '', image: '', paid: '', remaining: '' });
 const emptyCustomer = () => ({ name: '', phone: '', address: '', city: '', notes: '', status: 'פעיל' });
-const emptyReminder = () => ({ customerName: '', date: '', note: '' });
+const emptyReminder = () => ({ customerName: '', date: '', note: '', done: false });
 
 export default function Home() {
   const [user, setUser] = useState<any>(null);
@@ -153,7 +153,7 @@ export default function Home() {
 
   const startEditJob = (job: any) => {
     setEditingJob(job);
-    setNewJob({ ...job });
+    setNewJob({ ...job, paid: job.paid || '', remaining: job.remaining || '' });
     setScreen('newJob');
   };
 
@@ -165,7 +165,7 @@ export default function Home() {
         await updateDoc(doc(db, 'reminders', editingReminder.id), { ...newReminder, updatedAt: new Date().toISOString() });
         setEditingReminder(null);
       } else {
-        await addDoc(collection(db, 'reminders'), { ...newReminder, createdAt: new Date().toISOString() });
+        await addDoc(collection(db, 'reminders'), { ...newReminder, done: false, createdAt: new Date().toISOString() });
       }
       setNewReminder(emptyReminder());
       await loadReminders();
@@ -181,8 +181,13 @@ export default function Home() {
 
   const startEditReminder = (r: any) => {
     setEditingReminder(r);
-    setNewReminder({ customerName: r.customerName, date: r.date, note: r.note });
+    setNewReminder({ customerName: r.customerName, date: r.date, note: r.note, done: r.done || false });
     setScreen('newReminder');
+  };
+
+  const markReminderDone = async (r: any) => {
+    await updateDoc(doc(db, 'reminders', r.id), { done: true });
+    await loadReminders();
   };
 
   const handleImage = (e: any) => {
@@ -194,7 +199,12 @@ export default function Home() {
   };
 
   const sendWhatsApp = (customer: any, job: any) => {
-    const msg = `שלום ${customer.name}! סיכום עבודה:\nסוג: ${job.type}\nתיאור: ${job.description}\nמחיר: ₪${job.price}\nסטטוס: ${job.status}\nתאריך: ${formatDate(job.date)}`;
+    let msg = `שלום ${customer.name}! סיכום עבודה:\nסוג: ${job.type}\nתיאור: ${job.description}\nמחיר: ₪${job.price}\nסטטוס: ${job.status}\nתאריך: ${formatDate(job.date)}`;
+    if (job.notes) msg += `\nהערות: ${job.notes}`;
+    if (job.status === 'הסתיים') {
+      if (job.paid) msg += `\nשולם: ₪${job.paid}`;
+      if (job.remaining) msg += `\nנשאר לתשלום: ₪${job.remaining}`;
+    }
     const phone = customer.phone.replace(/\D/g, '');
     const intlPhone = phone.startsWith('0') ? '972' + phone.slice(1) : phone;
     window.open(`https://wa.me/${intlPhone}?text=${encodeURIComponent(msg)}`, '_blank');
@@ -204,7 +214,7 @@ export default function Home() {
     !search || c.name?.includes(search) || c.phone?.includes(search) || c.address?.includes(search)
   );
 
-  const todayReminders = reminders.filter(r => r.date === new Date().toISOString().split('T')[0]);
+  const todayReminders = reminders.filter(r => r.date === new Date().toISOString().split('T')[0] && !r.done);
 
   const s: any = {
     app: { fontFamily: 'Arial', direction: 'rtl', maxWidth: 500, margin: '0 auto', minHeight: '100vh', background: '#F8FAFC' },
@@ -213,14 +223,11 @@ export default function Home() {
     btn: { background: '#2563EB', color: '#fff', border: 'none', borderRadius: 10, padding: '12px 20px', fontSize: 15, fontWeight: 700, cursor: 'pointer', width: '100%', marginBottom: 8 },
     btnSec: { background: '#F1F5F9', color: '#374151', border: 'none', borderRadius: 10, padding: '12px 20px', fontSize: 15, fontWeight: 700, cursor: 'pointer', width: '100%', marginBottom: 8 },
     btnDanger: { background: '#FEE2E2', color: '#DC2626', border: 'none', borderRadius: 10, padding: '8px', fontSize: 13, fontWeight: 700, cursor: 'pointer', flex: 1, marginBottom: 0 },
+    btnSuccess: { background: '#D1FAE5', color: '#059669', border: 'none', borderRadius: 10, padding: '8px', fontSize: 13, fontWeight: 700, cursor: 'pointer', flex: 1, marginBottom: 0 },
     input: { width: '100%', padding: '11px 13px', borderRadius: 10, border: '1.5px solid #E2E8F0', fontSize: 15, marginBottom: 12, boxSizing: 'border-box' as any, fontFamily: 'Arial', color: '#1E293B' },
     label: { fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 4, display: 'block' },
     nav: { position: 'fixed' as any, bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '100%', maxWidth: 500, background: '#fff', borderTop: '1px solid #E2E8F0', display: 'flex' },
     navBtn: (active: boolean) => ({ flex: 1, padding: '8px 0 6px', border: 'none', background: 'none', cursor: 'pointer', color: active ? '#2563EB' : '#94A3B8', fontWeight: active ? 700 : 500, fontSize: 11 }),
-    // צבעי טקסט כהים יותר
-    textMain: { color: '#1E293B', fontWeight: 700 },
-    textSub: { color: '#475569', fontSize: 13 },
-    textMuted: { color: '#64748B', fontSize: 12 },
   };
 
   if (!user) return (
@@ -267,8 +274,8 @@ export default function Home() {
               </div>
               <div style={{ ...s.card, background: '#FFFBEB' }}>
                 <div style={{ fontSize: 28 }}>🔔</div>
-                <div style={{ fontSize: 28, fontWeight: 800, color: '#F59E0B' }}>{reminders.length}</div>
-                <div style={{ fontSize: 13, color: '#475569' }}>תזכורות</div>
+                <div style={{ fontSize: 28, fontWeight: 800, color: '#F59E0B' }}>{reminders.filter(r => !r.done).length}</div>
+                <div style={{ fontSize: 13, color: '#475569' }}>תזכורות פתוחות</div>
               </div>
             </div>
             <button style={s.btn} onClick={() => { setEditingCustomer(null); setNewCustomer(emptyCustomer()); setScreen('newCustomer'); }}>+ לקוח חדש</button>
@@ -325,10 +332,17 @@ export default function Home() {
                   <span style={{ background: STATUS_COLOR[j.status] + '22', color: STATUS_COLOR[j.status], padding: '3px 10px', borderRadius: 20, fontSize: 12, fontWeight: 700 }}>{j.status}</span>
                 </div>
                 {j.description && <div style={{ fontSize: 13, color: '#475569', marginTop: 4 }}>{j.description}</div>}
+                {j.notes && <div style={{ fontSize: 13, color: '#475569', marginTop: 2 }}>📝 {j.notes}</div>}
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6 }}>
                   {j.price ? <div style={{ fontWeight: 700, color: '#1E293B' }}>₪{j.price}</div> : <div />}
                   <div style={{ fontSize: 12, color: '#64748B' }}>{formatDate(j.date)}</div>
                 </div>
+                {j.status === 'הסתיים' && (j.paid || j.remaining) && (
+                  <div style={{ background: '#F0FDF4', borderRadius: 8, padding: '8px 10px', marginTop: 6, display: 'flex', gap: 12 }}>
+                    {j.paid && <div style={{ fontSize: 13, color: '#059669' }}>✅ שולם: ₪{j.paid}</div>}
+                    {j.remaining && <div style={{ fontSize: 13, color: '#DC2626' }}>⏳ נשאר: ₪{j.remaining}</div>}
+                  </div>
+                )}
                 {j.image && <img src={j.image} style={{ width: '100%', borderRadius: 8, marginTop: 8 }} />}
                 {j.reminder && <div style={{ fontSize: 12, color: '#F59E0B', marginTop: 4 }}>🔔 תזכורת: {formatDate(j.reminder)}</div>}
                 <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
@@ -388,6 +402,19 @@ export default function Home() {
             <label style={s.label}>מחיר ₪</label>
             <input style={s.input} type="number" value={newJob.price} onChange={e => setNewJob((p: any) => ({ ...p, price: e.target.value }))} placeholder="0" />
 
+            {/* שדות תשלום — רק כשסטטוס הסתיים */}
+            {newJob.status === 'הסתיים' && (
+              <>
+                <div style={{ background: '#F0FDF4', borderRadius: 10, padding: '12px', marginBottom: 12 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: '#059669', marginBottom: 8 }}>💰 פרטי תשלום</div>
+                  <label style={s.label}>שולם ₪</label>
+                  <input style={s.input} type="number" value={newJob.paid} onChange={e => setNewJob((p: any) => ({ ...p, paid: e.target.value }))} placeholder="0" />
+                  <label style={s.label}>נשאר לתשלום ₪</label>
+                  <input style={s.input} type="number" value={newJob.remaining} onChange={e => setNewJob((p: any) => ({ ...p, remaining: e.target.value }))} placeholder="0" />
+                </div>
+              </>
+            )}
+
             <label style={s.label}>הערות</label>
             <input style={s.input} value={newJob.notes} onChange={e => setNewJob((p: any) => ({ ...p, notes: e.target.value }))} placeholder="הערות נוספות..." />
 
@@ -409,17 +436,38 @@ export default function Home() {
             <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 16, color: '#1E293B' }}>🔔 תזכורות</div>
             <button style={s.btn} onClick={() => { setEditingReminder(null); setNewReminder(emptyReminder()); setScreen('newReminder'); }}>+ תזכורת חדשה</button>
             {reminders.length === 0 && <div style={{ textAlign: 'center', color: '#64748B', padding: 20 }}>אין תזכורות</div>}
-            {reminders.sort((a, b) => a.date > b.date ? 1 : -1).map(r => (
+
+            {/* תזכורות פתוחות */}
+            {reminders.filter(r => !r.done).length > 0 && (
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#475569', marginBottom: 6 }}>פתוחות</div>
+            )}
+            {reminders.filter(r => !r.done).sort((a, b) => a.date > b.date ? 1 : -1).map(r => (
               <div key={r.id} style={{ ...s.card, borderRight: `4px solid ${r.date === new Date().toISOString().split('T')[0] ? '#F59E0B' : '#E2E8F0'}` }}>
                 <div style={{ fontWeight: 700, color: '#1E293B' }}>{r.customerName}</div>
                 <div style={{ fontSize: 13, color: '#475569' }}>{r.note}</div>
                 <div style={{ fontSize: 12, color: '#64748B', marginTop: 4 }}>📅 {formatDate(r.date)}</div>
                 <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                  <button onClick={() => markReminderDone(r)} style={{ ...s.btnSuccess }}>✅ בוצע</button>
                   <button onClick={() => startEditReminder(r)} style={{ ...s.btnSec, marginBottom: 0, padding: '7px', fontSize: 13, flex: 1 }}>✏️ עריכה</button>
-                  <button onClick={() => deleteReminder(r)} style={{ ...s.btnDanger }}>🗑️ מחיקה</button>
+                  <button onClick={() => deleteReminder(r)} style={{ ...s.btnDanger }}>🗑️</button>
                 </div>
               </div>
             ))}
+
+            {/* תזכורות שבוצעו */}
+            {reminders.filter(r => r.done).length > 0 && (
+              <>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#94A3B8', marginTop: 12, marginBottom: 6 }}>בוצעו ✅</div>
+                {reminders.filter(r => r.done).sort((a, b) => a.date > b.date ? 1 : -1).map(r => (
+                  <div key={r.id} style={{ ...s.card, opacity: 0.6, borderRight: '4px solid #10B981' }}>
+                    <div style={{ fontWeight: 700, color: '#1E293B', textDecoration: 'line-through' }}>{r.customerName}</div>
+                    <div style={{ fontSize: 13, color: '#475569' }}>{r.note}</div>
+                    <div style={{ fontSize: 12, color: '#64748B', marginTop: 4 }}>📅 {formatDate(r.date)}</div>
+                    <button onClick={() => deleteReminder(r)} style={{ ...s.btnDanger, marginTop: 8, width: '100%' }}>🗑️ מחיקה</button>
+                  </div>
+                ))}
+              </>
+            )}
           </div>
         )}
 
