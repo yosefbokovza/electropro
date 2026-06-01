@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { auth, db } from '../lib/firebase';
 import { signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
-import { collection, addDoc, getDocs, doc, updateDoc, query, orderBy } from 'firebase/firestore';
+import { collection, addDoc, getDocs, doc, updateDoc, deleteDoc, query, orderBy } from 'firebase/firestore';
 
 const JOB_STATUSES = ['הצעת מחיר', 'אושר', 'בביצוע', 'הסתיים', 'תיקון תקלה'];
 
@@ -14,7 +14,6 @@ const STATUS_COLOR: any = {
   'תיקון תקלה': '#EF4444',
 };
 
-// פורמט תאריך DD/MM/YYYY
 const formatDate = (dateStr: string) => {
   if (!dateStr) return '';
   const [y, m, d] = dateStr.split('-');
@@ -22,7 +21,6 @@ const formatDate = (dateStr: string) => {
   return `${d}/${m}/${y}`;
 };
 
-// דחיסת תמונה לפני שמירה
 const compressImage = (base64: string, maxWidth = 800): Promise<string> => {
   return new Promise((resolve) => {
     const img = new Image();
@@ -39,7 +37,9 @@ const compressImage = (base64: string, maxWidth = 800): Promise<string> => {
   });
 };
 
-const emptyJob = () => ({ date: new Date().toISOString().split('T')[0], type: '', description: '', price: '', status: 'בביצוע', notes: '', reminder: '', image: '' });
+const emptyJob = () => ({ date: new Date().toISOString().split('T')[0], type: '', description: '', price: '', status: 'בביצוע', notes: '', reminder: '', image: '', paid: '', remaining: '' });
+const emptyCustomer = () => ({ name: '', phone: '', address: '', city: '', notes: '', status: 'פעיל' });
+const emptyReminder = () => ({ customerName: '', date: '', note: '', done: false });
 
 export default function Home() {
   const [user, setUser] = useState<any>(null);
@@ -52,11 +52,13 @@ export default function Home() {
   const [selectedCustomerJobs, setSelectedCustomerJobs] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [reminders, setReminders] = useState<any[]>([]);
-  const [editingJob, setEditingJob] = useState<any>(null); // עבודה בעריכה
+  const [editingJob, setEditingJob] = useState<any>(null);
+  const [editingCustomer, setEditingCustomer] = useState<any>(null);
+  const [editingReminder, setEditingReminder] = useState<any>(null);
 
-  const [newCustomer, setNewCustomer] = useState({ name: '', phone: '', address: '', city: '', notes: '', status: 'פעיל' });
+  const [newCustomer, setNewCustomer] = useState<any>(emptyCustomer());
   const [newJob, setNewJob] = useState<any>(emptyJob());
-  const [newReminder, setNewReminder] = useState({ customerName: '', date: '', note: '' });
+  const [newReminder, setNewReminder] = useState<any>(emptyReminder());
 
   const imgRef = useRef<HTMLInputElement>(null);
 
@@ -89,64 +91,103 @@ export default function Home() {
     catch { alert('פרטים שגויים'); }
   };
 
+  // CUSTOMER
   const saveCustomer = async () => {
     if (!newCustomer.name || !newCustomer.phone) return alert('שם וטלפון חובה');
     setLoading(true);
-    await addDoc(collection(db, 'customers'), { ...newCustomer, createdAt: new Date().toISOString() });
-    setNewCustomer({ name: '', phone: '', address: '', city: '', notes: '', status: 'פעיל' });
-    await loadCustomers();
-    setScreen('customers');
+    try {
+      if (editingCustomer) {
+        await updateDoc(doc(db, 'customers', editingCustomer.id), { ...newCustomer, updatedAt: new Date().toISOString() });
+        setEditingCustomer(null);
+      } else {
+        await addDoc(collection(db, 'customers'), { ...newCustomer, createdAt: new Date().toISOString() });
+      }
+      setNewCustomer(emptyCustomer());
+      await loadCustomers();
+      setScreen('customers');
+    } catch (e) { alert('שגיאה בשמירה'); }
     setLoading(false);
   };
 
+  const deleteCustomer = async (c: any) => {
+    if (!confirm(`למחוק את ${c.name}?`)) return;
+    await deleteDoc(doc(db, 'customers', c.id));
+    await loadCustomers();
+    setScreen('customers');
+  };
+
+  const startEditCustomer = (c: any) => {
+    setEditingCustomer(c);
+    setNewCustomer({ name: c.name, phone: c.phone, address: c.address, city: c.city, notes: c.notes, status: c.status });
+    setScreen('newCustomer');
+  };
+
+  // JOB
   const saveJob = async () => {
     if (!newJob.type) return alert('סוג עבודה חובה');
     if (!selectedCustomer?.id) return alert('לא נבחר לקוח');
     setLoading(true);
     try {
-      // דחיסת תמונה אם יש
       let jobData = { ...newJob };
       if (jobData.image && jobData.image.startsWith('data:')) {
         jobData.image = await compressImage(jobData.image);
       }
-
       if (editingJob) {
-        // עדכון עבודה קיימת
-        await updateDoc(doc(db, 'customers', selectedCustomer.id, 'jobs', editingJob.id), {
-          ...jobData,
-          updatedAt: new Date().toISOString()
-        });
+        await updateDoc(doc(db, 'customers', selectedCustomer.id, 'jobs', editingJob.id), { ...jobData, updatedAt: new Date().toISOString() });
         setEditingJob(null);
       } else {
-        // עבודה חדשה
-        await addDoc(collection(db, 'customers', selectedCustomer.id, 'jobs'), {
-          ...jobData,
-          createdAt: new Date().toISOString()
-        });
+        await addDoc(collection(db, 'customers', selectedCustomer.id, 'jobs'), { ...jobData, createdAt: new Date().toISOString() });
       }
-
       setNewJob(emptyJob());
       await loadCustomerJobs(selectedCustomer.id);
       setScreen('customer');
-    } catch (e) {
-      console.error(e);
-      alert('שגיאה בשמירה');
-    }
+    } catch (e) { console.error(e); alert('שגיאה בשמירה'); }
     setLoading(false);
+  };
+
+  const deleteJob = async (j: any) => {
+    if (!confirm(`למחוק עבודה: ${j.type}?`)) return;
+    await deleteDoc(doc(db, 'customers', selectedCustomer.id, 'jobs', j.id));
+    await loadCustomerJobs(selectedCustomer.id);
   };
 
   const startEditJob = (job: any) => {
     setEditingJob(job);
-    setNewJob({ ...job });
+    setNewJob({ ...job, paid: job.paid || '', remaining: job.remaining || '' });
     setScreen('newJob');
   };
 
+  // REMINDER
   const saveReminder = async () => {
     if (!newReminder.date || !newReminder.customerName) return alert('נא למלא שם ותאריך');
-    await addDoc(collection(db, 'reminders'), { ...newReminder, createdAt: new Date().toISOString() });
-    setNewReminder({ customerName: '', date: '', note: '' });
+    try {
+      if (editingReminder) {
+        await updateDoc(doc(db, 'reminders', editingReminder.id), { ...newReminder, updatedAt: new Date().toISOString() });
+        setEditingReminder(null);
+      } else {
+        await addDoc(collection(db, 'reminders'), { ...newReminder, done: false, createdAt: new Date().toISOString() });
+      }
+      setNewReminder(emptyReminder());
+      await loadReminders();
+      setScreen('reminders');
+    } catch (e) { alert('שגיאה בשמירה'); }
+  };
+
+  const deleteReminder = async (r: any) => {
+    if (!confirm(`למחוק תזכורת עבור ${r.customerName}?`)) return;
+    await deleteDoc(doc(db, 'reminders', r.id));
     await loadReminders();
-    setScreen('reminders');
+  };
+
+  const startEditReminder = (r: any) => {
+    setEditingReminder(r);
+    setNewReminder({ customerName: r.customerName, date: r.date, note: r.note, done: r.done || false });
+    setScreen('newReminder');
+  };
+
+  const markReminderDone = async (r: any) => {
+    await updateDoc(doc(db, 'reminders', r.id), { done: true });
+    await loadReminders();
   };
 
   const handleImage = (e: any) => {
@@ -158,7 +199,12 @@ export default function Home() {
   };
 
   const sendWhatsApp = (customer: any, job: any) => {
-    const msg = `שלום ${customer.name}! סיכום עבודה:\nסוג: ${job.type}\nתיאור: ${job.description}\nמחיר: ₪${job.price}\nסטטוס: ${job.status}\nתאריך: ${formatDate(job.date)}`;
+    let msg = `שלום ${customer.name}! סיכום עבודה:\nסוג: ${job.type}\nתיאור: ${job.description}\nמחיר: ₪${job.price}\nסטטוס: ${job.status}\nתאריך: ${formatDate(job.date)}`;
+    if (job.notes) msg += `\nהערות: ${job.notes}`;
+    if (job.status === 'הסתיים') {
+      if (job.paid) msg += `\nשולם: ₪${job.paid}`;
+      if (job.remaining) msg += `\nנשאר לתשלום: ₪${job.remaining}`;
+    }
     const phone = customer.phone.replace(/\D/g, '');
     const intlPhone = phone.startsWith('0') ? '972' + phone.slice(1) : phone;
     window.open(`https://wa.me/${intlPhone}?text=${encodeURIComponent(msg)}`, '_blank');
@@ -168,7 +214,7 @@ export default function Home() {
     !search || c.name?.includes(search) || c.phone?.includes(search) || c.address?.includes(search)
   );
 
-  const todayReminders = reminders.filter(r => r.date === new Date().toISOString().split('T')[0]);
+  const todayReminders = reminders.filter(r => r.date === new Date().toISOString().split('T')[0] && !r.done);
 
   const s: any = {
     app: { fontFamily: 'Arial', direction: 'rtl', maxWidth: 500, margin: '0 auto', minHeight: '100vh', background: '#F8FAFC' },
@@ -176,7 +222,8 @@ export default function Home() {
     card: { background: '#fff', borderRadius: 12, padding: '14px 16px', marginBottom: 10, boxShadow: '0 1px 4px rgba(0,0,0,0.07)', border: '1px solid #F1F5F9' },
     btn: { background: '#2563EB', color: '#fff', border: 'none', borderRadius: 10, padding: '12px 20px', fontSize: 15, fontWeight: 700, cursor: 'pointer', width: '100%', marginBottom: 8 },
     btnSec: { background: '#F1F5F9', color: '#374151', border: 'none', borderRadius: 10, padding: '12px 20px', fontSize: 15, fontWeight: 700, cursor: 'pointer', width: '100%', marginBottom: 8 },
-    // תיקון placeholder — צבע כהה יותר
+    btnDanger: { background: '#FEE2E2', color: '#DC2626', border: 'none', borderRadius: 10, padding: '8px', fontSize: 13, fontWeight: 700, cursor: 'pointer', flex: 1, marginBottom: 0 },
+    btnSuccess: { background: '#D1FAE5', color: '#059669', border: 'none', borderRadius: 10, padding: '8px', fontSize: 13, fontWeight: 700, cursor: 'pointer', flex: 1, marginBottom: 0 },
     input: { width: '100%', padding: '11px 13px', borderRadius: 10, border: '1.5px solid #E2E8F0', fontSize: 15, marginBottom: 12, boxSizing: 'border-box' as any, fontFamily: 'Arial', color: '#1E293B' },
     label: { fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 4, display: 'block' },
     nav: { position: 'fixed' as any, bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '100%', maxWidth: 500, background: '#fff', borderTop: '1px solid #E2E8F0', display: 'flex' },
@@ -212,7 +259,7 @@ export default function Home() {
         {/* DASHBOARD */}
         {screen === 'dashboard' && (
           <div>
-            <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 4 }}>שלום! 👋</div>
+            <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 4, color: '#1E293B' }}>שלום! 👋</div>
             {todayReminders.length > 0 && (
               <div style={{ background: '#FFFBEB', border: '1.5px solid #FCD34D', borderRadius: 12, padding: '10px 14px', marginBottom: 12 }}>
                 <div style={{ fontWeight: 700, color: '#92400E', marginBottom: 4 }}>🔔 תזכורות להיום ({todayReminders.length})</div>
@@ -223,15 +270,15 @@ export default function Home() {
               <div style={{ ...s.card, background: '#EFF6FF' }}>
                 <div style={{ fontSize: 28 }}>👥</div>
                 <div style={{ fontSize: 28, fontWeight: 800, color: '#2563EB' }}>{customers.length}</div>
-                <div style={{ fontSize: 13, color: '#64748B' }}>לקוחות</div>
+                <div style={{ fontSize: 13, color: '#475569' }}>לקוחות</div>
               </div>
               <div style={{ ...s.card, background: '#FFFBEB' }}>
                 <div style={{ fontSize: 28 }}>🔔</div>
-                <div style={{ fontSize: 28, fontWeight: 800, color: '#F59E0B' }}>{reminders.length}</div>
-                <div style={{ fontSize: 13, color: '#64748B' }}>תזכורות</div>
+                <div style={{ fontSize: 28, fontWeight: 800, color: '#F59E0B' }}>{reminders.filter(r => !r.done).length}</div>
+                <div style={{ fontSize: 13, color: '#475569' }}>תזכורות פתוחות</div>
               </div>
             </div>
-            <button style={s.btn} onClick={() => setScreen('newCustomer')}>+ לקוח חדש</button>
+            <button style={s.btn} onClick={() => { setEditingCustomer(null); setNewCustomer(emptyCustomer()); setScreen('newCustomer'); }}>+ לקוח חדש</button>
             <button style={s.btnSec} onClick={() => setScreen('customers')}>כל הלקוחות</button>
             <button style={s.btnSec} onClick={() => setScreen('reminders')}>🔔 תזכורות</button>
           </div>
@@ -241,79 +288,93 @@ export default function Home() {
         {screen === 'customers' && (
           <div>
             <input style={s.input} placeholder="🔍 חיפוש..." value={search} onChange={e => setSearch(e.target.value)} />
-            <div style={{ fontSize: 13, color: '#94A3B8', marginBottom: 8 }}>{filtered.length} לקוחות</div>
+            <div style={{ fontSize: 13, color: '#475569', marginBottom: 8 }}>{filtered.length} לקוחות</div>
             {filtered.map(c => (
-              <div key={c.id} style={{ ...s.card, cursor: 'pointer' }} onClick={() => { setSelectedCustomer(c); loadCustomerJobs(c.id); setScreen('customer'); }}>
-                <div style={{ fontWeight: 700, fontSize: 15 }}>{c.name}</div>
-                <div style={{ fontSize: 13, color: '#64748B' }}>📞 {c.phone}</div>
-                <div style={{ fontSize: 13, color: '#64748B' }}>📍 {c.address}, {c.city}</div>
+              <div key={c.id} style={s.card}>
+                <div style={{ cursor: 'pointer' }} onClick={() => { setSelectedCustomer(c); loadCustomerJobs(c.id); setScreen('customer'); }}>
+                  <div style={{ fontWeight: 700, fontSize: 15, color: '#1E293B' }}>{c.name}</div>
+                  <div style={{ fontSize: 13, color: '#475569' }}>📞 {c.phone}</div>
+                  <div style={{ fontSize: 13, color: '#475569' }}>📍 {c.address}, {c.city}</div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                  <button onClick={() => startEditCustomer(c)} style={{ ...s.btnSec, marginBottom: 0, padding: '7px', fontSize: 13, flex: 1 }}>✏️ עריכה</button>
+                  <button onClick={() => deleteCustomer(c)} style={{ ...s.btnDanger }}>🗑️ מחיקה</button>
+                </div>
               </div>
             ))}
-            <button style={s.btn} onClick={() => setScreen('newCustomer')}>+ לקוח חדש</button>
+            <button style={s.btn} onClick={() => { setEditingCustomer(null); setNewCustomer(emptyCustomer()); setScreen('newCustomer'); }}>+ לקוח חדש</button>
           </div>
         )}
 
         {/* CUSTOMER CARD */}
         {screen === 'customer' && selectedCustomer && (
           <div>
-            <button onClick={() => setScreen('customers')} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, marginBottom: 12 }}>← חזרה</button>
+            <button onClick={() => setScreen('customers')} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, marginBottom: 12, color: '#1E293B' }}>← חזרה</button>
             <div style={s.card}>
-              <div style={{ fontSize: 20, fontWeight: 800 }}>{selectedCustomer.name}</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: '#1E293B' }}>{selectedCustomer.name}</div>
               <a href={`tel:${selectedCustomer.phone}`} style={{ textDecoration: 'none' }}>
                 <div style={{ fontSize: 14, color: '#2563EB', marginTop: 4 }}>📞 {selectedCustomer.phone}</div>
               </a>
-              <div style={{ fontSize: 14, color: '#64748B' }}>📍 {selectedCustomer.address}, {selectedCustomer.city}</div>
+              <div style={{ fontSize: 14, color: '#475569' }}>📍 {selectedCustomer.address}, {selectedCustomer.city}</div>
               {selectedCustomer.notes && <div style={{ marginTop: 8, color: '#78350F', background: '#FFFBEB', padding: 8, borderRadius: 8, fontSize: 13 }}>📝 {selectedCustomer.notes}</div>}
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                <button onClick={() => startEditCustomer(selectedCustomer)} style={{ ...s.btnSec, marginBottom: 0, padding: '7px', fontSize: 13, flex: 1 }}>✏️ עריכה</button>
+                <button onClick={() => deleteCustomer(selectedCustomer)} style={{ ...s.btnDanger }}>🗑️ מחיקה</button>
+              </div>
             </div>
             <button style={s.btn} onClick={() => { setEditingJob(null); setNewJob(emptyJob()); setScreen('newJob'); }}>+ הוסף עבודה</button>
-            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 8 }}>עבודות</div>
-            {selectedCustomerJobs.length === 0 && <div style={{ textAlign: 'center', color: '#94A3B8', padding: 20 }}>אין עבודות עדיין</div>}
+            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 8, color: '#1E293B' }}>עבודות</div>
+            {selectedCustomerJobs.length === 0 && <div style={{ textAlign: 'center', color: '#64748B', padding: 20 }}>אין עבודות עדיין</div>}
             {selectedCustomerJobs.map(j => (
               <div key={j.id} style={s.card}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                  <div style={{ fontWeight: 700 }}>{j.type}</div>
+                  <div style={{ fontWeight: 700, color: '#1E293B' }}>{j.type}</div>
                   <span style={{ background: STATUS_COLOR[j.status] + '22', color: STATUS_COLOR[j.status], padding: '3px 10px', borderRadius: 20, fontSize: 12, fontWeight: 700 }}>{j.status}</span>
                 </div>
-                {j.description && <div style={{ fontSize: 13, color: '#64748B', marginTop: 4 }}>{j.description}</div>}
+                {j.description && <div style={{ fontSize: 13, color: '#475569', marginTop: 4 }}>{j.description}</div>}
+                {j.notes && <div style={{ fontSize: 13, color: '#475569', marginTop: 2 }}>📝 {j.notes}</div>}
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6 }}>
-                  {j.price ? <div style={{ fontWeight: 700 }}>₪{j.price}</div> : <div />}
-                  <div style={{ fontSize: 12, color: '#94A3B8' }}>{formatDate(j.date)}</div>
+                  {j.price ? <div style={{ fontWeight: 700, color: '#1E293B' }}>₪{j.price}</div> : <div />}
+                  <div style={{ fontSize: 12, color: '#64748B' }}>{formatDate(j.date)}</div>
                 </div>
+                {j.status === 'הסתיים' && (j.paid || j.remaining) && (
+                  <div style={{ background: '#F0FDF4', borderRadius: 8, padding: '8px 10px', marginTop: 6, display: 'flex', gap: 12 }}>
+                    {j.paid && <div style={{ fontSize: 13, color: '#059669' }}>✅ שולם: ₪{j.paid}</div>}
+                    {j.remaining && <div style={{ fontSize: 13, color: '#DC2626' }}>⏳ נשאר: ₪{j.remaining}</div>}
+                  </div>
+                )}
                 {j.image && <img src={j.image} style={{ width: '100%', borderRadius: 8, marginTop: 8 }} />}
                 {j.reminder && <div style={{ fontSize: 12, color: '#F59E0B', marginTop: 4 }}>🔔 תזכורת: {formatDate(j.reminder)}</div>}
                 <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                  <button onClick={() => startEditJob(j)} style={{ ...s.btnSec, marginBottom: 0, padding: '8px', fontSize: 13, flex: 1 }}>
-                    ✏️ עריכה
-                  </button>
-                  <button onClick={() => sendWhatsApp(selectedCustomer, j)} style={{ ...s.btnSec, marginBottom: 0, padding: '8px', fontSize: 13, flex: 1 }}>
-                    📱 וואטסאפ
-                  </button>
+                  <button onClick={() => startEditJob(j)} style={{ ...s.btnSec, marginBottom: 0, padding: '8px', fontSize: 13, flex: 1 }}>✏️ עריכה</button>
+                  <button onClick={() => sendWhatsApp(selectedCustomer, j)} style={{ ...s.btnSec, marginBottom: 0, padding: '8px', fontSize: 13, flex: 1 }}>📱 וואטסאפ</button>
+                  <button onClick={() => deleteJob(j)} style={{ ...s.btnDanger }}>🗑️</button>
                 </div>
               </div>
             ))}
           </div>
         )}
 
-        {/* NEW CUSTOMER */}
+        {/* NEW / EDIT CUSTOMER */}
         {screen === 'newCustomer' && (
           <div>
-            <button onClick={() => setScreen('customers')} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, marginBottom: 12 }}>← חזרה</button>
-            <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 16 }}>לקוח חדש</div>
+            <button onClick={() => setScreen('customers')} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, marginBottom: 12, color: '#1E293B' }}>← חזרה</button>
+            <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 16, color: '#1E293B' }}>{editingCustomer ? '✏️ עריכת לקוח' : 'לקוח חדש'}</div>
             {([['name', 'שם לקוח'], ['phone', 'טלפון'], ['address', 'כתובת'], ['city', 'עיר'], ['notes', 'הערות']] as [string, string][]).map(([k, l]) => (
               <div key={k}>
                 <label style={s.label}>{l}</label>
-                <input style={s.input} value={(newCustomer as any)[k]} onChange={e => setNewCustomer(p => ({ ...p, [k]: e.target.value }))} />
+                <input style={s.input} value={(newCustomer as any)[k]} onChange={e => setNewCustomer((p: any) => ({ ...p, [k]: e.target.value }))} />
               </div>
             ))}
-            <button style={s.btn} onClick={saveCustomer} disabled={loading}>{loading ? 'שומר...' : 'שמור לקוח'}</button>
+            <button style={s.btn} onClick={saveCustomer} disabled={loading}>{loading ? 'שומר...' : editingCustomer ? 'עדכן לקוח' : 'שמור לקוח'}</button>
           </div>
         )}
 
         {/* NEW / EDIT JOB */}
         {screen === 'newJob' && (
           <div>
-            <button onClick={() => { setEditingJob(null); setScreen('customer'); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, marginBottom: 12 }}>← חזרה</button>
-            <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 16 }}>
+            <button onClick={() => { setEditingJob(null); setScreen('customer'); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, marginBottom: 12, color: '#1E293B' }}>← חזרה</button>
+            <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 16, color: '#1E293B' }}>
               {editingJob ? '✏️ עריכת עבודה' : 'עבודה חדשה'} — {selectedCustomer?.name}
             </div>
 
@@ -341,6 +402,19 @@ export default function Home() {
             <label style={s.label}>מחיר ₪</label>
             <input style={s.input} type="number" value={newJob.price} onChange={e => setNewJob((p: any) => ({ ...p, price: e.target.value }))} placeholder="0" />
 
+            {/* שדות תשלום — רק כשסטטוס הסתיים */}
+            {newJob.status === 'הסתיים' && (
+              <>
+                <div style={{ background: '#F0FDF4', borderRadius: 10, padding: '12px', marginBottom: 12 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: '#059669', marginBottom: 8 }}>💰 פרטי תשלום</div>
+                  <label style={s.label}>שולם ₪</label>
+                  <input style={s.input} type="number" value={newJob.paid} onChange={e => setNewJob((p: any) => ({ ...p, paid: e.target.value }))} placeholder="0" />
+                  <label style={s.label}>נשאר לתשלום ₪</label>
+                  <input style={s.input} type="number" value={newJob.remaining} onChange={e => setNewJob((p: any) => ({ ...p, remaining: e.target.value }))} placeholder="0" />
+                </div>
+              </>
+            )}
+
             <label style={s.label}>הערות</label>
             <input style={s.input} value={newJob.notes} onChange={e => setNewJob((p: any) => ({ ...p, notes: e.target.value }))} placeholder="הערות נוספות..." />
 
@@ -359,31 +433,60 @@ export default function Home() {
         {/* REMINDERS */}
         {screen === 'reminders' && (
           <div>
-            <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 16 }}>🔔 תזכורות</div>
-            <button style={s.btn} onClick={() => setScreen('newReminder')}>+ תזכורת חדשה</button>
-            {reminders.length === 0 && <div style={{ textAlign: 'center', color: '#94A3B8', padding: 20 }}>אין תזכורות</div>}
-            {reminders.sort((a, b) => a.date > b.date ? 1 : -1).map(r => (
+            <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 16, color: '#1E293B' }}>🔔 תזכורות</div>
+            <button style={s.btn} onClick={() => { setEditingReminder(null); setNewReminder(emptyReminder()); setScreen('newReminder'); }}>+ תזכורת חדשה</button>
+            {reminders.length === 0 && <div style={{ textAlign: 'center', color: '#64748B', padding: 20 }}>אין תזכורות</div>}
+
+            {/* תזכורות פתוחות */}
+            {reminders.filter(r => !r.done).length > 0 && (
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#475569', marginBottom: 6 }}>פתוחות</div>
+            )}
+            {reminders.filter(r => !r.done).sort((a, b) => a.date > b.date ? 1 : -1).map(r => (
               <div key={r.id} style={{ ...s.card, borderRight: `4px solid ${r.date === new Date().toISOString().split('T')[0] ? '#F59E0B' : '#E2E8F0'}` }}>
-                <div style={{ fontWeight: 700 }}>{r.customerName}</div>
-                <div style={{ fontSize: 13, color: '#64748B' }}>{r.note}</div>
-                <div style={{ fontSize: 12, color: '#94A3B8', marginTop: 4 }}>📅 {formatDate(r.date)}</div>
+                <div style={{ fontWeight: 700, color: '#1E293B' }}>{r.customerName}</div>
+                <div style={{ fontSize: 13, color: '#475569' }}>{r.note}</div>
+                <div style={{ fontSize: 12, color: '#64748B', marginTop: 4 }}>📅 {formatDate(r.date)}</div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                  <button onClick={() => markReminderDone(r)} style={{ ...s.btnSuccess }}>✅ בוצע</button>
+                  <button onClick={() => startEditReminder(r)} style={{ ...s.btnSec, marginBottom: 0, padding: '7px', fontSize: 13, flex: 1 }}>✏️ עריכה</button>
+                  <button onClick={() => deleteReminder(r)} style={{ ...s.btnDanger }}>🗑️</button>
+                </div>
               </div>
             ))}
+
+            {/* תזכורות שבוצעו */}
+            {reminders.filter(r => r.done).length > 0 && (
+              <>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#94A3B8', marginTop: 12, marginBottom: 6 }}>בוצעו ✅</div>
+                {reminders.filter(r => r.done).sort((a, b) => a.date > b.date ? 1 : -1).map(r => (
+                  <div key={r.id} style={{ ...s.card, opacity: 0.7, borderRight: '4px solid #10B981' }}>
+                    <div style={{ fontWeight: 700, color: '#1E293B', textDecoration: 'line-through' }}>{r.customerName}</div>
+                    <div style={{ fontSize: 13, color: '#475569' }}>{r.note}</div>
+                    <div style={{ fontSize: 12, color: '#64748B', marginTop: 4 }}>📅 {formatDate(r.date)}</div>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                      <button onClick={async () => { await updateDoc(doc(db, 'reminders', r.id), { done: false }); await loadReminders(); }} style={{ ...s.btnSuccess }}>↩️ החזר לפעיל</button>
+                      <button onClick={() => startEditReminder(r)} style={{ ...s.btnSec, marginBottom: 0, padding: '7px', fontSize: 13, flex: 1 }}>✏️ עריכה</button>
+                      <button onClick={() => deleteReminder(r)} style={{ ...s.btnDanger }}>🗑️</button>
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
           </div>
         )}
 
-        {/* NEW REMINDER */}
+        {/* NEW / EDIT REMINDER */}
         {screen === 'newReminder' && (
           <div>
-            <button onClick={() => setScreen('reminders')} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, marginBottom: 12 }}>← חזרה</button>
-            <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 16 }}>תזכורת חדשה</div>
+            <button onClick={() => setScreen('reminders')} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, marginBottom: 12, color: '#1E293B' }}>← חזרה</button>
+            <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 16, color: '#1E293B' }}>{editingReminder ? '✏️ עריכת תזכורת' : 'תזכורת חדשה'}</div>
             <label style={s.label}>שם לקוח</label>
-            <input style={s.input} value={newReminder.customerName} onChange={e => setNewReminder(p => ({ ...p, customerName: e.target.value }))} placeholder="שם הלקוח..." />
+            <input style={s.input} value={newReminder.customerName} onChange={e => setNewReminder((p: any) => ({ ...p, customerName: e.target.value }))} placeholder="שם הלקוח..." />
             <label style={s.label}>תאריך</label>
-            <input style={s.input} type="date" value={newReminder.date} onChange={e => setNewReminder(p => ({ ...p, date: e.target.value }))} />
+            <input style={s.input} type="date" value={newReminder.date} onChange={e => setNewReminder((p: any) => ({ ...p, date: e.target.value }))} />
             <label style={s.label}>הערה</label>
-            <input style={s.input} value={newReminder.note} onChange={e => setNewReminder(p => ({ ...p, note: e.target.value }))} placeholder="מה לעשות..." />
-            <button style={s.btn} onClick={saveReminder}>שמור תזכורת</button>
+            <input style={s.input} value={newReminder.note} onChange={e => setNewReminder((p: any) => ({ ...p, note: e.target.value }))} placeholder="מה לעשות..." />
+            <button style={s.btn} onClick={saveReminder}>{editingReminder ? 'עדכן תזכורת' : 'שמור תזכורת'}</button>
           </div>
         )}
 
